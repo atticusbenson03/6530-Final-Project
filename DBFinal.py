@@ -398,8 +398,130 @@ def guess_agg(sql_text, data_frame_result, data_frame_full):
     return "COUNT", data_frame_result.columns[0]
 
 
+def where_clause(sql_text):
+    text = sql_text.strip()
+    text_upper = text.upper()
+    where_pos = text_upper.find("WHERE")
+    if where_pos == -1:
+        return ""
+    after_where = text[where_pos + len("WHERE"):]
+
+    upper_after = after_where.upper()
+    group_by_pos = upper_after.find("GROUP BY")
+    if group_by_pos != -1:
+        where_part = after_where[:group_by_pos]
+    else:
+        where_part = after_where
+
+    where_part = where_part.split(";")[0]
+    return where_part.strip()
+
+
+def split_predicates(where_text):
+    if where_text == "":
+        return []
+    parts = re.split(r"\bAND\b", where_text, flags=re.IGNORECASE)
+    cleaned = []
+    for part in parts:
+        stripped = part.strip()
+        if stripped != "":
+            cleaned.append(stripped)
+    return cleaned
+
+
+def build_predicate_functions(predicate_texts, result_frame):
+    predicate_funcs = []
+    for text in predicate_texts:
+        predicate = text.strip()
+
+        like_match = re.match(r'"?([A-Za-z0-9_ ]+)"?\s+LIKE\s+\'(.+)\'', predicate, flags=re.IGNORECASE)
+        if like_match:
+            col_name = like_match.group(1).strip()
+            pattern = like_match.group(2)
+            if col_name not in result_frame.columns:
+                continue
+            if pattern.endswith("%"):
+                prefix = pattern[:-1]
+
+                def check_like_prefix(row, column_name=col_name, pref=prefix):
+                    value = str(row[column_name])
+                    return value.startswith(pref)
+
+                predicate_funcs.append((col_name + " LIKE '" + pattern + "'", check_like_prefix))
+                continue
+
+        eq_match = re.match(r'"?([A-Za-z0-9_ ]+)"?\s*=\s*\'?(.+?)\'?$', predicate, flags=re.IGNORECASE)
+        if eq_match:
+            col_name = eq_match.group(1).strip()
+            value = eq_match.group(2)
+            if col_name not in result_frame.columns:
+                continue
+
+            def check_equal(row, column_name=col_name, val=value):
+                return str(row[column_name]) == val
+
+            predicate_funcs.append((col_name + " = " + str(value), check_equal))
+            continue
+
+        gt_match = re.match(r'"?([A-Za-z0-9_ ]+)"?\s*>\s*([0-9\.]+)$', predicate, flags=re.IGNORECASE)
+        if gt_match:
+            col_name = gt_match.group(1).strip()
+            value_text = gt_match.group(2)
+            if col_name not in result_frame.columns:
+                continue
+            try:
+                threshold = float(value_text)
+            except Exception:
+                continue
+
+            def check_greater(row, column_name=col_name, thresh=threshold):
+                try:
+                    val = float(row[column_name])
+                    return val > thresh
+                except Exception:
+                    return False
+
+            predicate_funcs.append((col_name + " > " + str(threshold), check_greater))
+            continue
+
+    return predicate_funcs
+
+
+def predicate_scores(result_frame, row_scores_list, predicate_funcs):
+    scores_for_predicates = []
+    if result_frame.empty or len(row_scores_list) == 0:
+        return scores_for_predicates
+
+    for (pred_label, check_func) in predicate_funcs:
+        total_score = 0.0
+        for index, row in result_frame.iterrows():
+            if check_func(row):
+                total_score += row_scores_list[index]
+        scores_for_predicates.append((pred_label, total_score))
+
+    total_all = sum(score for (_, score) in scores_for_predicates)
+    normalized = []
+    if total_all > 0.0:
+        for (label, score) in scores_for_predicates:
+            normalized.append((label, score / total_all))
+    else:
+        for (label, score) in scores_for_predicates:
+            normalized.append((label, 0.0))
+
+    return normalized
+
+
+def show_predicates(pred_score_list):
+    print("\nPredicate-level contribution scores:")
+    if not pred_score_list:
+        print("No simple predicates found or matched on result columns.")
+        return
+    for (label, score) in pred_score_list:
+        print("Predicate " + str(label) + " score " + str(round(score, 4)))
+
+
 def main():
-    print("Auto plan and row contribution tool (Postgres plan + CSV)")
+    print("Auto plan, predicate, and row contribution tool (Postgres plan + CSV)")
 
     plan = read_plan()
     if plan is None:
@@ -461,6 +583,12 @@ def main():
 
     scores = row_scores(result_frame, value_column, agg_name)
     show_rows(result_frame, scores, max_rows_to_show=10)
+
+    where_text = where_clause(sql_text)
+    predicate_texts = split_predicates(where_text)
+    predicate_funcs = build_predicate_functions(predicate_texts, result_frame)
+    pred_score_list = predicate_scores(result_frame, scores, predicate_funcs)
+    show_predicates(pred_score_list)
 
     sqlite_connection.close()
     print("\nFinished.")
