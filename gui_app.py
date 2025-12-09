@@ -19,6 +19,7 @@ from DBFinal import (
     where_clause, split_predicates,
     build_predicate_functions, predicate_scores,
 )
+
 class QueryExplanationGUI:
     def __init__(self, root):
         self.root = root
@@ -31,9 +32,9 @@ class QueryExplanationGUI:
         self.result_frame = None
         self.table_info = {}
         self.column_scores = {}
-        self.predicate_scores_list = []
-        self.predicate_funcs = []
-        self.predicate_row_masks = {}
+        self.predicate_scores_list = []   # kept but unused in UI
+        self.predicate_funcs = []         # kept but unused in UI
+        self.predicate_row_masks = {}     # kept but unused in UI
         self.column_row_masks = {}
         self.row_scores_list = []
         self.current_table = None
@@ -231,6 +232,7 @@ class QueryExplanationGUI:
 
             self.row_scores_list = row_scores(self.result_frame, value_column, agg_name)
                 
+            # Predicate analysis kept but not shown in heatmaps
             where_text = where_clause(sql_text)
             predicate_texts = split_predicates(where_text)
             self.predicate_funcs = build_predicate_functions(predicate_texts, self.result_frame)
@@ -277,8 +279,8 @@ class QueryExplanationGUI:
         
         data = np.array(scores).reshape(1, -1)
         sns.heatmap(data, ax=ax, annot=True, fmt=".4f", cmap="YlOrRd",
-                   xticklabels=tables, yticklabels=["Contribution"],
-                   vmin=0, vmax=1, cbar_kws={'label': 'Contribution Score'})
+                    xticklabels=tables, yticklabels=["Contribution"],
+                    vmin=0, vmax=1, cbar_kws={'label': 'Contribution Score'})
         
         ax.set_title("Table-Level Contribution Scores\n(Click on a table to drill down)", fontsize=12, fontweight='bold')
         
@@ -298,44 +300,24 @@ class QueryExplanationGUI:
         self.breadcrumb_var.set(f"Database Overview > {table_name}")
         
         self.figure.clear()
-        ax1 = self.figure.add_subplot(121)
-        ax2 = self.figure.add_subplot(122)
+        ax1 = self.figure.add_subplot(111)
         
         table_columns = [col for (tbl, col), score in self.column_scores.items() 
-                        if tbl == table_name or tbl is None]
+                         if tbl == table_name or tbl is None]
         col_scores = [self.column_scores.get((table_name, col), 0) or 
-                     self.column_scores.get((None, col), 0) for col in table_columns]
+                      self.column_scores.get((None, col), 0) for col in table_columns]
         
         if table_columns:
             data = np.array(col_scores).reshape(-1, 1)
             sns.heatmap(data, ax=ax1, annot=True, fmt=".4f", cmap="Blues",
-                       yticklabels=table_columns, xticklabels=["Score"],
-                       vmin=0, vmax=max(col_scores) if col_scores else 1,
-                       cbar_kws={'label': 'Column Contribution'})
-            ax1.set_title(f"Column Contributions\n{table_name}", fontsize=11, fontweight='bold')
+                        yticklabels=table_columns, xticklabels=["Score"],
+                        vmin=0, vmax=max(col_scores) if col_scores else 1,
+                        cbar_kws={'label': 'Column Contribution'})
+            ax1.set_title(f"Column Contributions\n{table_name}\n(Click a column to see rows)", fontsize=11, fontweight='bold')
         else:
             ax1.text(0.5, 0.5, "No column data", ha='center', va='center')
         
         self.clickable_regions = []
-        
-        if self.predicate_scores_list:
-            pred_labels = [p[0][:30] + "..." if len(p[0]) > 30 else p[0] for p in self.predicate_scores_list]
-            pred_values = [p[1] for p in self.predicate_scores_list]
-            
-            data = np.array(pred_values).reshape(-1, 1)
-            sns.heatmap(data, ax=ax2, annot=True, fmt=".4f", cmap="Greens",
-                       yticklabels=pred_labels, xticklabels=["Score"],
-                       vmin=0, vmax=max(pred_values) if pred_values else 1,
-                       cbar_kws={'label': 'Predicate Contribution'})
-            ax2.set_title("Predicate Contributions\n(Click to see rows)", fontsize=11, fontweight='bold')
-            
-            for i, (label, score) in enumerate(self.predicate_scores_list):
-                self.clickable_regions.append({
-                    "type": "predicate", "name": label,
-                    "index": i, "ax": ax2, "y_range": (i, i + 1)
-                })
-        else:
-            ax2.text(0.5, 0.5, "No predicates found", ha='center', va='center')
         
         for i, col in enumerate(table_columns):
             self.clickable_regions.append({
@@ -350,10 +332,7 @@ class QueryExplanationGUI:
         self.current_view = "rows"
         self.view_stack.append(("table_details", self.current_table))
         
-        if filter_type == "predicate":
-            display_val = filter_value[:30] + "..." if len(filter_value) > 30 else filter_value
-            self.breadcrumb_var.set(f"Database > {self.current_table} > Predicate: {display_val}")
-        elif filter_type == "column":
+        if filter_type == "column":
             self.breadcrumb_var.set(f"Database > {self.current_table} > Column: {filter_value}")
         else:
             self.breadcrumb_var.set(f"Database > {self.current_table} > All Rows")
@@ -369,10 +348,7 @@ class QueryExplanationGUI:
         display_frame = self.result_frame.copy()
         display_frame["__score__"] = self.row_scores_list
         
-        if filter_type == "predicate" and filter_value in self.predicate_row_masks:
-            mask = self.predicate_row_masks[filter_value]
-            display_frame = display_frame[mask]
-        elif filter_type == "column" and filter_value in self.column_row_masks:
+        if filter_type == "column" and filter_value in self.column_row_masks:
             mask = self.column_row_masks[filter_value]
             display_frame = display_frame[mask]
         
@@ -387,8 +363,8 @@ class QueryExplanationGUI:
         
         max_val = data_for_heatmap.max() if data_for_heatmap.max() > 0 else 1
         sns.heatmap(data_for_heatmap, ax=ax, annot=True, fmt=".4f", cmap="YlOrRd",
-                   yticklabels=row_labels, xticklabels=["Contribution"],
-                   vmin=0, vmax=max_val, cbar_kws={'label': 'Row Contribution Score'})
+                    yticklabels=row_labels, xticklabels=["Contribution"],
+                    vmin=0, vmax=max_val, cbar_kws={'label': 'Row Contribution Score'})
         
         ax.set_title("Row-Level Contributions (Top 50)", fontsize=12, fontweight='bold')
         self.figure.tight_layout()
@@ -420,12 +396,6 @@ class QueryExplanationGUI:
                 if x_min <= x < x_max and y_min <= y < y_max:
                     self.show_table_details(region["name"])
                     return
-            elif region["type"] == "predicate":
-                if event.inaxes == region.get('ax'):
-                    y_min, y_max = region["y_range"]
-                    if y_min <= y < y_max:
-                        self.show_row_contributions("predicate", region["name"])
-                        return
             elif region["type"] == "column":
                 if event.inaxes == region.get('ax'):
                     y_min, y_max = region["y_range"]
@@ -463,11 +433,13 @@ class QueryExplanationGUI:
             self.details_tree.delete(item)
         self.status_var.set("Cleared. Ready for new analysis.")
         self.breadcrumb_var.set("Home")
+
 def main():
     root = tk.Tk()
     style = ttk.Style()
     style.theme_use('clam')
     app = QueryExplanationGUI(root)
     root.mainloop()
+
 if __name__ == "__main__":
     main()
