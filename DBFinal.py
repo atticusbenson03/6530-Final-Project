@@ -338,21 +338,21 @@ def guess_agg(sql_text, data_frame_result, data_frame_full):
         input_col = sum_with_alias.group(1).strip()
         output_col = sum_with_alias.group(2).strip()
         if output_col in data_frame_result.columns:
-            return "SUM", output_col
+            return "SUM", output_col, input_col
         if input_col in data_frame_result.columns:
-            return "SUM", input_col
+            return "SUM", input_col, input_col
         if input_col in data_frame_full.columns:
-            return "SUM", input_col
+            return "SUM", input_col, input_col
 
     if avg_with_alias:
         input_col = avg_with_alias.group(1).strip()
         output_col = avg_with_alias.group(2).strip()
         if output_col in data_frame_result.columns:
-            return "AVG", output_col
+            return "AVG", output_col, input_col
         if input_col in data_frame_result.columns:
-            return "AVG", input_col
+            return "AVG", input_col, input_col
         if input_col in data_frame_full.columns:
-            return "AVG", input_col
+            return "AVG", input_col, input_col
 
     sum_no_alias = re.search(
         r"SUM\s*\(\s*\"?([A-Za-z0-9_ ]+)\"?\s*\)",
@@ -368,34 +368,35 @@ def guess_agg(sql_text, data_frame_result, data_frame_full):
     if sum_no_alias:
         col_name = sum_no_alias.group(1).strip()
         if col_name in data_frame_result.columns:
-            return "SUM", col_name
+            return "SUM", col_name, col_name
         if col_name in data_frame_full.columns:
-            return "SUM", col_name
+            return "SUM", col_name, col_name
 
     if avg_no_alias:
         col_name = avg_no_alias.group(1).strip()
         if col_name in data_frame_result.columns:
-            return "AVG", col_name
+            return "AVG", col_name, col_name
         if col_name in data_frame_full.columns:
-            return "AVG", col_name
+            return "AVG", col_name, col_name
 
     count_match = re.search(r"COUNT\s*\(", sql_text, flags=re.IGNORECASE)
     if count_match:
         for result_col in data_frame_result.columns:
             try:
                 pd.to_numeric(data_frame_result[result_col].head(10), errors="raise")
-                return "COUNT", result_col
+                return "COUNT", result_col, None
             except Exception:
                 continue
 
     for result_col in data_frame_result.columns:
         try:
             pd.to_numeric(data_frame_result[result_col].head(10), errors="raise")
-            return "SUM", result_col
+            return "SUM", result_col, None
         except Exception:
             continue
 
-    return "COUNT", data_frame_result.columns[0]
+    return "COUNT", data_frame_result.columns[0], None
+
 
 
 def where_clause(sql_text):
@@ -559,7 +560,16 @@ def main():
 
     print("Rows returned by query on CSV: " + str(len(result_frame)))
 
+# Infer aggregate and both output + input columns
+    agg_name, value_column, input_column = guess_agg(sql_text, result_frame, full_frame)
+    if value_column not in result_frame.columns:
+        print("\nChosen value column " + str(value_column) + " is not in result. Falling back to first column.")
+        value_column = result_frame.columns[0]
+
+    # Valid columns: result columns plus aggregate input column (e.g., Index)
     valid_columns = set(result_frame.columns)
+    if input_column is not None:
+        valid_columns.add(input_column)
 
     table_info = defaultdict(lambda: {"total_cost": 0.0, "row_count": 0.0})
     node_info = {}
@@ -574,12 +584,8 @@ def main():
     show_nodes(node_info, max_nodes_to_show=15)
     show_columns(column_scores, max_columns_to_show=20)
 
-    agg_name, value_column = guess_agg(sql_text, result_frame, full_frame)
-    if value_column not in result_frame.columns:
-        print("\nChosen value column " + str(value_column) + " is not in result. Falling back to first column.")
-        value_column = result_frame.columns[0]
-
     print("\nUsing aggregate " + agg_name + " on column " + str(value_column))
+
 
     scores = row_scores(result_frame, value_column, agg_name)
     show_rows(result_frame, scores, max_rows_to_show=10)
